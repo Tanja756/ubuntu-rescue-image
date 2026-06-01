@@ -45,6 +45,7 @@ EXTRA_SYSTEM_PACKAGES=(
   "testdisk" "gddrescue" "partclone" "clonezilla"
   "btop" "tmux" "screen" "mc" "nmap"
   "tcpdump" "wireshark-common" "iftop" "iperf3"
+  "ipmitool" "freeipmi"
 )
 EXTRA_PIP_PACKAGES=(
   "requests" "paramiko" "psutil" "pyshtrih"
@@ -452,6 +453,31 @@ echo "  sudo ip addr add 192.168.100.10/24 dev eth0"
 echo -e "\\e[1;33mДобавление маршрута до роутера (пример):\\e[0m"
 echo "  sudo ip route add default via 192.168.100.1"
 echo ""
+# IPMI: пользователи и пароли
+echo -e "\\e[1;33mУправление сервером по IPMI:\\e[0m"
+echo "  # Просмотр датчиков (локально): sudo ipmitool sensor"
+echo "  # Управление питанием: sudo ipmitool power status|on|off|cycle|reset"
+echo -e "\\e[1;33mУправление пользователями IPMI:\\e[0m"
+echo "  # Список пользователей: sudo ipmitool user list 1"
+echo "  # Смена пароля (ID обычно 1 или 2): sudo ipmitool user set password <ID> <пароль>"
+echo "  # Создать нового пользователя:"
+echo "    sudo ipmitool user set name <ID> <имя>"
+echo "    sudo ipmitool user set password <ID> <пароль>"
+echo "    sudo ipmitool user priv <ID> <уровень> 1   # уровни: 2 (user), 3 (operator), 4 (admin)"
+echo "    sudo ipmitool user enable <ID>"
+echo ""
+
+# IPMI: настройка сети (только если BMC в режиме static)
+if ipmitool lan print 1 | grep -q "IP Address Source.*Static"; then
+  echo -e "\\e[1;33mНастройка сети BMC (статический IP):\\e[0m"
+  echo "  # Проверить текущие параметры: sudo ipmitool lan print 1"
+  echo "  # Задать статический IP:"
+  echo "    sudo ipmitool lan set 1 ipaddr <IP>"
+  echo "    sudo ipmitool lan set 1 netmask <МАСКА>"
+  echo "    sudo ipmitool lan set 1 defgw ipaddr <ШЛЮЗ>"
+  echo "  # Переключить в DHCP: sudo ipmitool lan set 1 ipsrc dhcp"
+  echo ""
+fi
 echo -e "\\e[1;33mМонтирование Windows-разделов (NTFS/exFAT/FAT):\\e[0m"
 echo "  # Создать точку монтирования:"
 echo "  sudo mkdir -p /mnt/windows"
