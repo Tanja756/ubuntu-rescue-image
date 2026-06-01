@@ -8,7 +8,7 @@ MIRROR="${MIRROR:-http://archive.ubuntu.com/ubuntu}"
 WORKDIR="${WORKDIR:-$(pwd)/rescuebuild}"
 IMAGENAME="${IMAGENAME:-RescueOS-${RELEASE}-$(date +%Y%m%d-%H%M).iso}"
 
-CUSTOM_FILES_DIR="$HOME/my_custom_files"
+CUSTOM_FILES_DIR="$(pwd)/export"
 
 HOSTNAME="rescuebox"
 USERNAME="unknown"
@@ -41,9 +41,13 @@ EXTRA_SYSTEM_PACKAGES=(
   "aria2" "netcat-openbsd" "socat" "far2l"
   "python3" "python3-pip" "smartmontools"
   "openssh-server" "sqlite3" "jq"
+  "ntfs-3g" "exfatprogs" "dosfstools"
+  "testdisk" "gddrescue" "partclone" "clonezilla"
+  "btop" "tmux" "screen" "mc" "nmap"
+  "tcpdump" "wireshark-common" "iftop" "iperf3"
 )
 EXTRA_PIP_PACKAGES=(
-  "requests" "paramiko" "psutil"
+  "requests" "paramiko" "psutil" "pyshtrih"
 )
 if [[ "$INSTALL_DHCP_SERVER" == "yes" ]]; then
   EXTRA_SYSTEM_PACKAGES+=("dnsmasq")
@@ -106,6 +110,16 @@ log()   { echo -e "[\e[1;34m$(date '+%H:%M:%S')\e[0m] $1"; }
 warn()  { echo -e "[\e[1;33mWARN\e[0m] $1" >&2; }
 err()   { echo -e "[\e[1;31mERROR\e[0m] $1" >&2; }
 success(){ echo -e "[\e[1;32mSUCCESS\e[0m] $1"; }
+
+replace_multiline() {
+    local file="$1"
+    local placeholder="$2"
+    local content="$3"
+
+    perl -0777 -i -pe \
+        "s|\Q$placeholder\E|\Q$content\E|s" \
+        "$file"
+}
 
 cleanup() {
   if [[ "${CLEANUP_RUNNING:-}" == "1" ]]; then return; fi
@@ -248,6 +262,13 @@ main() {
     apt_pinning_rules+="Package: $pkg\nPin: release *\nPin-Priority: -1\n\n"
   done
 
+  # Создаём APT pinning для блокировки нежелательных пакетов
+  log "Generating APT pinning rules for blocked packages..."
+  sudo mkdir -p "$CHROOTDIR/etc/apt/preferences.d"
+  for pkg in "${BLOCKED_CANONICAL_PACKAGES[@]}"; do
+      printf "Package: %s\nPin: release *\nPin-Priority: -1\n\n" "$pkg" | sudo tee -a "$CHROOTDIR/etc/apt/preferences.d/no-canonical" >/dev/null
+  done
+
   # Генерация network config для статики с двумя IP
   local network_config=""
   if [[ "$NETWORK_MODE" == "static" ]]; then
@@ -263,8 +284,10 @@ main() {
   # Конфиг для dnsmasq (если включён)
   local dnsmasq_config=""
   if [[ "$INSTALL_DHCP_SERVER" == "yes" ]]; then
-    dnsmasq_config="interface=en*\nbind-interfaces\ndhcp-range=$DHCP_RANGE\n"
-    dnsmasq_config+="dhcp-option=3,$DHCP_GATEWAY\ndhcp-option=6,$DHCP_DNS\n"
+    dnsmasq_config="bind-dynamic\n"
+    dnsmasq_config+="dhcp-range=$DHCP_RANGE\n"
+    dnsmasq_config+="dhcp-option=3,$DHCP_GATEWAY\n"
+    dnsmasq_config+="dhcp-option=6,$DHCP_DNS\n"
     dnsmasq_config+="dhcp-option=1,$DHCP_NETMASK\n"
   fi
 
@@ -321,12 +344,6 @@ DPkg::Options "--force-confold";
 DPkg::Options "--force-confdef";
 DPkg::Options "--force-overwrite";
 Dpkg::Use-Pty "0";
-EOF
-
-# block canonical packages
-mkdir -p /etc/apt/preferences.d/
-cat > /etc/apt/preferences.d/no-canonical <<EOF
-BLOCKED_RULES_PLACEHOLDER
 EOF
 
 # mozilla repo
@@ -400,6 +417,13 @@ DNSMASQ
   systemctl disable dnsmasq 2>/dev/null || true  # не запускаем автоматически
 fi
 
+# Настройка wireshark
+if dpkg -l wireshark-common >/dev/null 2>&1; then
+    echo "wireshark-common wireshark-common/install-setuid boolean true" | debconf-set-selections
+    dpkg-reconfigure -f noninteractive wireshark-common
+    usermod -aG wireshark USERNAME_PLACEHOLDER
+fi
+
 # autologin
 mkdir -p /etc/systemd/system/getty@tty1.service.d/
 cat > /etc/systemd/system/getty@tty1.service.d/override.conf <<AUTO
@@ -463,7 +487,6 @@ SCRIPT_EOF
   sed -i "s|RELEASE_PLACEHOLDER|$RELEASE|g" "$config_script"
   sed -i "s|SYSTEM_PACKAGES_PLACEHOLDER|$system_packages_str|g" "$config_script"
   sed -i "s|LIVE_PACKAGES_PLACEHOLDER|$live_packages_str|g" "$config_script"
-  sed -i "s|BLOCKED_RULES_PLACEHOLDER|$apt_pinning_rules|g" "$config_script"
   sed -i "s|BLOCKED_SPACE_PLACEHOLDER|$blocked_space|g" "$config_script"
   sed -i "s|MOZILLA_KEY_URL_PLACEHOLDER|$MOZILLA_KEY_URL|g" "$config_script"
   sed -i "s|MOZILLA_REPO_LINE_PLACEHOLDER|$MOZILLA_REPO_LINE|g" "$config_script"
@@ -471,9 +494,20 @@ SCRIPT_EOF
   sed -i "s|USER_PASS_PLACEHOLDER|$USER_PASS|g" "$config_script"
   sed -i "s|ROOT_PASS_PLACEHOLDER|$ROOT_PASS|g" "$config_script"
   sed -i "s|NETWORK_MODE_PLACEHOLDER|$NETWORK_MODE|g" "$config_script"
-  sed -i "s|NETWORK_CONFIG_PLACEHOLDER|$network_config|g" "$config_script"
   sed -i "s|INSTALL_DHCP_SERVER_PLACEHOLDER|$INSTALL_DHCP_SERVER|g" "$config_script"
-  sed -i "s|DNSMASQ_CONFIG_PLACEHOLDER|$dnsmasq_config|g" "$config_script"
+
+  replace_multiline "$config_script" \
+    "BLOCKED_RULES_PLACEHOLDER" \
+    "$apt_pinning_rules"
+
+  replace_multiline "$config_script" \
+    "NETWORK_CONFIG_PLACEHOLDER" \
+    "$network_config"
+
+  replace_multiline "$config_script" \
+    "DNSMASQ_CONFIG_PLACEHOLDER" \
+    "$dnsmasq_config"
+    
   pip_packages_str=$(IFS=' '; echo "${EXTRA_PIP_PACKAGES[*]}")
   sed -i "s|PIP_PACKAGES_PLACEHOLDER|$pip_packages_str|g" "$config_script"
 
@@ -549,20 +583,15 @@ SCRIPT_EOF
   cat <<GRUBCFG | sudo tee "$ISODIR/boot/grub/grub.cfg" >/dev/null
 set timeout=10
 set default=0
+
 menuentry "Start RescueOS" {
     linux /casper/vmlinuz boot=casper quiet splash username=$USERNAME hostname=$HOSTNAME
     initrd /casper/initrd.img
 }
-menuentry "Start RescueOS (Safe Graphics)" {
-    linux /casper/vmlinuz boot=casper quiet splash username=$USERNAME hostname=$HOSTNAME nomodeset
-    initrd /casper/initrd.img
-}
+
 menuentry "Start RescueOS (Debug)" {
     linux /casper/vmlinuz boot=casper debug username=$USERNAME hostname=$HOSTNAME
     initrd /casper/initrd.img
-}
-menuentry "Memory Test (memtest86+)" {
-    linux16 /boot/memtest86+.bin
 }
 GRUBCFG
 
