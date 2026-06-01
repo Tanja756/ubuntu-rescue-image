@@ -9,6 +9,8 @@ WORKDIR="${WORKDIR:-$(pwd)/rescuebuild}"
 IMAGENAME="${IMAGENAME:-RescueOS-${RELEASE}-$(date +%Y%m%d-%H%M).iso}"
 
 CUSTOM_FILES_DIR="$(pwd)/export"
+# Путь к каталогу с дополнительными deb-пакетами (относительно текущей папки скрипта)
+CUSTOM_DEB_DIR="$(pwd)/distr"
 
 HOSTNAME="rescuebox"
 USERNAME="unknown"
@@ -46,7 +48,14 @@ EXTRA_SYSTEM_PACKAGES=(
   "btop" "tmux" "screen" "mc" "nmap"
   "tcpdump" "wireshark-common" "iftop" "iperf3"
   "ipmitool" "freeipmi"
+  "libusb-1.0-0" "libc6"
+  )
+
+# Список имён deb-файлов, которые нужно установить
+CUSTOM_DEB_PACKAGES=(
+  "libfptr10_10.10.8.0_amd64_uem.deb"
 )
+
 EXTRA_PIP_PACKAGES=(
   "requests" "paramiko" "psutil" "pyshtrih"
 )
@@ -386,6 +395,27 @@ if command -v pip3 >/dev/null; then
   pip3 install --no-cache-dir --break-system-packages PIP_PACKAGES_PLACEHOLDER || echo "WARNING: pip install failed"
 fi
 
+# Установка локальных deb-пакетов (скопированных из хоста)
+if [ -d /tmp/custom_debs ]; then
+  echo "Installing custom deb packages..."
+  for deb in /tmp/custom_debs/*.deb; do
+    if [ -f "$deb" ]; then
+      echo "  - $(basename "$deb")"
+      # Пытаемся установить пакет
+      dpkg -i "$deb" || {
+        echo "Failed to install $(basename "$deb"), attempting to fix dependencies..."
+        apt-get install -f -y
+        dpkg -i "$deb" || {
+          echo "ERROR: Could not install $(basename "$deb") even after fixing dependencies."
+          exit 1
+        }
+      }
+    fi
+  done
+  # Удаляем временную папку с deb-файлами
+  rm -rf /tmp/custom_debs
+fi
+
 # kernel check
 if ! ls /boot/vmlinuz-* >/dev/null 2>&1; then
   echo "ERROR: Kernel not installed"
@@ -401,6 +431,17 @@ for user in USERNAME_PLACEHOLDER; do
   fi
 done
 echo "root:ROOT_PASS_PLACEHOLDER" | chpasswd
+
+# Настройка клавиатуры (русская + английская, Alt+Shift)
+cat > /etc/default/keyboard <<KB
+XKBMODEL="pc105"
+XKBLAYOUT="us,ru"
+XKBVARIANT=","
+XKBOPTIONS="grp:alt_shift_toggle"
+BACKSPACE="guess"
+KB
+setupcon --save
+systemctl enable keyboard-setup 2>/dev/null || true
 
 # network configuration
 cat > /etc/systemd/network/20-wired.network <<NET
@@ -537,6 +578,20 @@ SCRIPT_EOF
   pip_packages_str=$(IFS=' '; echo "${EXTRA_PIP_PACKAGES[*]}")
   sed -i "s|PIP_PACKAGES_PLACEHOLDER|$pip_packages_str|g" "$config_script"
 
+  if [[ -d "$CUSTOM_DEB_DIR" ]] && [[ ${#CUSTOM_DEB_PACKAGES[@]} -gt 0 ]]; then
+    log "Copying custom deb packages to chroot..."
+    sudo mkdir -p "$CHROOTDIR/tmp/custom_debs"
+    for deb in "${CUSTOM_DEB_PACKAGES[@]}"; do
+      if [[ -f "$CUSTOM_DEB_DIR/$deb" ]]; then
+        sudo cp "$CUSTOM_DEB_DIR/$deb" "$CHROOTDIR/tmp/custom_debs/"
+        log "  - $deb"
+      else
+        err "Custom deb not found: $CUSTOM_DEB_DIR/$deb"
+        exit 1
+      fi
+    done
+  fi
+
   chmod +x "$config_script"
   log "Running chroot configuration..."
   sudo cp "$config_script" "$CHROOTDIR/tmp/configure_system.sh"
@@ -549,7 +604,6 @@ SCRIPT_EOF
   fi
   rm -f "$config_script"
 
-  # ========== КОПИРОВАНИЕ ПОЛЬЗОВАТЕЛЬСКИХ ФАЙЛОВ ==========
   CUSTOM_FILES_DIR="${CUSTOM_FILES_DIR:-$HOME/my_custom_files}"
   if [[ -d "$CUSTOM_FILES_DIR" ]]; then
       log "Copying custom files from $CUSTOM_FILES_DIR to /home/$USERNAME in chroot..."
@@ -560,7 +614,6 @@ SCRIPT_EOF
   else
       warn "Custom files directory $CUSTOM_FILES_DIR not found, skipping"
   fi
-  # ========================================================
 
   log "Updating initramfs..."
   sudo chroot "$CHROOTDIR" update-initramfs -u -k all
