@@ -47,7 +47,7 @@ EXTRA_SYSTEM_PACKAGES=(
   "testdisk" "gddrescue" "partclone" "clonezilla"
   "btop" "tmux" "screen" "mc" "nmap"
   "tcpdump" "wireshark-common" "iftop" "iperf3"
-  "ipmitool" "freeipmi"
+  "ipmitool" "freeipmi" "whiptail"
   "libusb-1.0-0" "libc6"
   )
 
@@ -281,8 +281,8 @@ main() {
 
   # Генерация network config для статики с двумя IP
   local network_config=""
-  if [[ "$NETWORK_MODE" == "static" ]]; then
-    network_config="[Match]\nName=en*\n\n[Network]\n"
+    if [[ "$NETWORK_MODE" == "static" ]]; then
+      network_config="[Match]\nName=e*\n\n[Network]\n"
     for ip in "${STATIC_IPS[@]}"; do
       network_config+="Address=$ip\n"
     done
@@ -294,11 +294,14 @@ main() {
   # Конфиг для dnsmasq (если включён)
   local dnsmasq_config=""
   if [[ "$INSTALL_DHCP_SERVER" == "yes" ]]; then
-    dnsmasq_config="bind-dynamic\n"
-    dnsmasq_config+="dhcp-range=$DHCP_RANGE\n"
-    dnsmasq_config+="dhcp-option=3,$DHCP_GATEWAY\n"
-    dnsmasq_config+="dhcp-option=6,$DHCP_DNS\n"
-    dnsmasq_config+="dhcp-option=1,$DHCP_NETMASK\n"
+      dnsmasq_config=$(cat <<EOF
+bind-dynamic
+dhcp-range=$DHCP_RANGE
+dhcp-option=3,$DHCP_GATEWAY
+dhcp-option=6,$DHCP_DNS
+dhcp-option=1,$DHCP_NETMASK
+EOF
+  )
   fi
 
   local config_script="/tmp/configure_chroot_$$.sh"
@@ -466,6 +469,15 @@ if dpkg -l wireshark-common >/dev/null 2>&1; then
     usermod -aG wireshark USERNAME_PLACEHOLDER
 fi
 
+# Добавляем вызов в .bashrc
+echo '
+# RescueOS configurator
+alias config="bash $HOME/.config/settings.sh"
+alias ll="ls -alF"
+alias la="ls -A"
+alias l="ls -CF"
+' >> /home/$USERNAME/.bashrc
+
 # autologin
 mkdir -p /etc/systemd/system/getty@tty1.service.d/
 cat > /etc/systemd/system/getty@tty1.service.d/override.conf <<AUTO
@@ -530,6 +542,9 @@ echo "  sudo mount -t exfat /dev/sda2 /mnt/windows"
 echo "  # Для FAT32:"
 echo "  sudo mount -t vfat /dev/sda3 /mnt/windows"
 echo "  # Узнать список разделов: lsblk -f"
+echo ""
+echo -e "\\e[1;33mКонфигурация в интерактивномрежиме:\\e[0m"
+echo "  config"
 echo ""
 WELCOME
 chmod +x /etc/profile.d/welcome.sh
