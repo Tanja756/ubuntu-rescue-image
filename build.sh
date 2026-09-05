@@ -46,7 +46,7 @@ EXTRA_SYSTEM_PACKAGES=(
   "ntfs-3g" "exfatprogs" "dosfstools"
   "testdisk" "gddrescue" "partclone" "clonezilla"
   "btop" "tmux" "screen" "mc" "nmap"
-  "tcpdump" "wireshark-common" "iftop" "iperf3"
+  "tcpdump" "wireshark-common" "iftop" "iperf3" "network-manager" "bash-completion" "aircrack-ng" "hcxdumptool" "hcxtools"
   "ipmitool" "freeipmi" "whiptail"
   "libusb-1.0-0" "libc6"
   )
@@ -91,7 +91,7 @@ SYSTEM_PACKAGES=(
   "bind9-utils" "cpio" "cron" "dmidecode" "dosfstools" "ed" "file" "ftp"
   "hdparm" "logrotate" "lshw" "lsof" "man-db" "media-types" "nftables"
   "pciutils" "psmisc" "rsync" "strace" "time" "usbutils" "xz-utils" "zstd"
-  "nano" "bash-completion" "apt-file" "command-not-found" "less"
+  "nano" "xxd" "bash-completion" "apt-file" "command-not-found" "less"
   "ntfs-3g" "exfatprogs" "dosfstools"
 )
 
@@ -451,6 +451,7 @@ cat > /etc/systemd/network/20-wired.network <<NET
 NETWORK_CONFIG_PLACEHOLDER
 NET
 systemctl enable iwd systemd-networkd systemd-resolved
+systemctl enable NetworkManager 2>/dev/null || true
 rm -f /etc/resolv.conf
 ln -sf /run/systemd/resolve/stub-resolv.conf /etc/resolv.conf
 
@@ -476,7 +477,172 @@ alias config="bash $HOME/.config/settings.sh"
 alias ll="ls -alF"
 alias la="ls -A"
 alias l="ls -CF"
-' >> /home/$USERNAME/.bashrc
+
+# История команд
+export HISTFILE="$HOME/.bash_history"
+export HISTSIZE=10000
+export HISTFILESIZE=20000
+export HISTCONTROL=ignoreboth:erasedups
+shopt -s histappend
+' >> /home/USERNAME_PLACEHOLDER/.bashrc
+
+# История для root
+echo '
+export HISTFILE="/root/.bash_history"
+export HISTSIZE=10000
+export HISTFILESIZE=20000
+export HISTCONTROL=ignoreboth:erasedups
+shopt -s histappend
+' >> /root/.bashrc
+
+# Создаём файлы истории
+touch /home/USERNAME_PLACEHOLDER/.bash_history
+chown USERNAME_PLACEHOLDER:USERNAME_PLACEHOLDER /home/USERNAME_PLACEHOLDER/.bash_history
+touch /root/.bash_history
+
+# Пополним историю командами из help.sh
+cat > /home/USERNAME_PLACEHOLDER/.bash_history <<'HIST_EOF'
+# Wi-Fi (iw)
+iw dev
+iw dev wlan0 info
+iw dev wlan0 link
+iwconfig wlan0
+sudo iw dev wlan0 scan
+sudo iw dev wlan0 scan | grep SSID
+sudo iw dev wlan0 scan | grep -E "SSID|signal|freq"
+sudo iw dev wlan0 connect <SSID>
+sudo iw dev wlan0 connect <SSID> key 0:s:<пароль>
+sudo iw dev wlan0 connect <SSID> p2p-client
+sudo iw dev wlan0 disconnect
+sudo iw dev wlan0 set power_save on
+sudo iw dev wlan0 set power_save off
+sudo iw dev wlan0 set type monitor
+sudo iw dev wlan0 set type managed
+sudo iw dev wlan0 scan | grep SSID
+sudo iw dev wlan0 connect MyWiFi key 0:s:12345678
+sudo iw dev wlan0 link
+# Сеть
+ip addr show
+ip -4 addr show | grep -oP '(?<=inet\s)\d+(\.\d+){3}(/\d+)?'
+sudo ip addr add 192.168.100.10/24 dev eth0
+sudo ip addr del 192.168.100.10/24 dev eth0
+sudo ip route add default via 192.168.100.1
+sudo ip route add 10.0.0.0/8 via 192.168.1.1
+ip route show
+resolvectl status
+resolvectl dns eth0 8.8.8.8
+ping 8.8.8.8
+ping -c 4 ya.ru
+traceroute ya.ru
+mtr ya.ru
+sudo dhclient eth0
+sudo dhclient -r eth0
+sudo dhclient -v eth0
+sudo ip addr add 192.168.1.100/24 dev eth0
+sudo ip link set eth0 up
+sudo ip route add default via 192.168.1.1
+# DHCP-сервер
+sudo dnsmasq -C /etc/dnsmasq.d/rescue-dhcp.conf --no-daemon
+sudo dnsmasq -C /etc/dnsmasq.d/rescue-dhcp.conf
+sudo pkill dnsmasq
+cat /var/lib/misc/dnsmasq.leases
+sudo ip addr add 192.168.137.110/24 dev eth0
+# IPMI
+sudo ipmitool sensor
+sudo ipmitool sensor list
+sudo ipmitool sdr
+sudo ipmitool power status
+sudo ipmitool power on
+sudo ipmitool power off
+sudo ipmitool power cycle
+sudo ipmitool power reset
+sudo ipmitool mc info
+sudo ipmitool mc guid
+sudo ipmitool user list 1
+sudo ipmitool user set name <ID> <имя>
+sudo ipmitool user set password <ID> <пароль>
+sudo ipmitool user priv <ID> <уровень> 1
+sudo ipmitool user enable <ID>
+sudo ipmitool user disable <ID>
+sudo ipmitool lan print 1
+sudo ipmitool lan set 1 ipsrc static
+sudo ipmitool lan set 1 ipaddr <IP>
+sudo ipmitool lan set 1 netmask <МАСКА>
+sudo ipmitool lan set 1 defgw ipaddr <ШЛЮЗ>
+sudo ipmitool lan set 1 ipsrc dhcp
+sudo ipmitool sel list
+sudo ipmitool sel clear
+sudo ipmitool sol activate
+sudo ipmitool sol deactivate
+sudo ipmitool chassis status
+sudo ipmitool chassis identify <сек>
+# Монтирование
+lsblk -f
+lsblk
+fdisk -l
+blkid
+sudo mkdir -p /mnt/windows
+sudo mount -t ntfs3 /dev/sdX1 /mnt/windows
+sudo mount -t ntfs-3g /dev/sdX1 /mnt/windows
+sudo mount -t exfat /dev/sdX2 /mnt/windows
+sudo mount -t vfat /dev/sdX3 /mnt/windows
+sudo umount /mnt/windows
+sudo mount -t ntfs-3g /dev/sdX1 /mnt/windows -o uid=1000,gid=1000,umask=022
+sudo smartctl -a /dev/sda
+sudo smartctl -H /dev/sda
+sudo smartctl -t short /dev/sda
+sudo smartctl -t long /dev/sda
+sudo smartctl -l selftest /dev/sda
+# Полезные команды
+mc
+far2l
+nmap -sn 192.168.1.0/24
+nmap -sV 192.168.1.1
+nc -zv 192.168.1.1 22
+socat - TCP:192.168.1.1:80
+iperf3 -s
+iperf3 -c 192.168.1.100
+iftop
+tcpdump -i eth0
+dmesg -w
+journalctl -f
+htop
+btop
+aria2c -x 16 -s 16 <URL>
+mount_img
+sudo parted -l
+sudo fdisk -l
+sudo ddrescue -d /dev/sda /dev/sdb log
+sudo partclone.ext4 -d /dev/sda1 -o img
+sqlite3 /path/to/db "SELECT * FROM table;"
+cat file.json | jq .
+jq '.key' file.json
+# USB
+usb_dev
+# Установка Ubuntu
+install-ubuntu ~/ubuntu-24.04.1-desktop-amd64.iso
+sudo dd if=~/ubuntu.iso of=/dev/sdX bs=4M status=progress conv=fsync
+aria2c -x 16 -s 16 https://releases.ubuntu.com/24.04/ubuntu-24.04.1-desktop-amd64.iso
+sudo apt install -y aircrack-ng
+# DAR
+restore-img /mnt/img/fs
+restore-img /mnt/img/system.img
+restore-img /mnt/img/ubuntu.iso
+cd /mnt/img
+md5sum -c fs.1.dar.md5 fs.2.dar.md5 fs.3.dar.md5 fs.4.dar.md5
+dar -x fs -R /mnt/restore
+dar -x fs -R /mnt/restore -i путь/к/файлу
+dar -c backup /path/to/dir -z9
+dar -c backup -s 2G -z9 /path/to/dir
+dar -l fs
+dar -t fs
+dar --help
+HIST_EOF
+chown USERNAME_PLACEHOLDER:USERNAME_PLACEHOLDER /home/USERNAME_PLACEHOLDER/.bash_history
+
+# Пополним историю root
+cp /home/USERNAME_PLACEHOLDER/.bash_history /root/.bash_history
+chown root:root /root/.bash_history
 
 # autologin
 mkdir -p /etc/systemd/system/getty@tty1.service.d/
