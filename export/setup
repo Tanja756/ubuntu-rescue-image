@@ -1,0 +1,537 @@
+#!/bin/bash
+# ============================================================
+# RescueOS — Администрирование (whiptail)
+# ============================================================
+
+RED='\e[1;31m'; GREEN='\e[1;32m'; YELLOW='\e[1;33m'; CYAN='\e[1;36m'; NC='\e[0m'
+
+WLAN_IFACE=$(iw dev 2>/dev/null | grep -A1 "Interface" | grep -oP '(?<=Interface )\w+' | head -1)
+
+# ======================= ПОДМЕНЮ: СЕТЬ =======================
+submenu_network() {
+    while true; do
+        CHOICE=$(whiptail --title "Сеть" --menu \
+            "Выберите действие:" 16 55 4 \
+            "1" "WiFi — сканирование и подключение" \
+            "2" "Проводная — статический IP / DHCP" \
+            "3" "VPN — запуск / остановка OpenVPN" \
+            "4" "Статус сети" \
+            "5" "Назад" 3>&1 1>&2 2>&3)
+
+        case $CHOICE in
+            1) wifi_connect ;;
+            2) wired_setup ;;
+            3) vpn_manage ;;
+            4) net_status ;;
+            5) break ;;
+            *) break ;;
+        esac
+    done
+}
+
+# ======================= WiFi =======================
+wifi_connect() {
+    if [[ -z "$WLAN_IFACE" ]]; then
+        whiptail --msgbox "WiFi-интерфейс не найден.\n\nПроверьте: iw dev" 10 50
+        return 1
+    fi
+
+    echo -e "${CYAN}Сканирование WiFi на $WLAN_IFACE...${NC}"
+    local networks
+    networks=$(nmcli dev wifi list ifname "$WLAN_IFACE" 2>/dev/null | tail -n +2 | head -20)
+
+    if [[ -z "$networks" ]]; then
+        whiptail --msgbox "Сети не найдены.\n\nПроверьте, что адаптер включен:\nsudo ip link set $WLAN_IFACE up" 10 50
+        return 1
+    fi
+
+    local menu_items=()
+    local i=1
+    local ssid_list=""
+    while IFS= read -r line; do
+        local ssid=$(echo "$line" | awk '{print $1}')
+        [[ -z "$ssid" ]] && continue
+        local signal=$(echo "$line" | awk '{print $7}')
+        local security=$(echo "$line" | awk '{print $8}')
+        menu_items+=("$i" "$ssid | ${signal:-?} | $security")
+        ssid_list+="$i: $ssid\n"
+        ((i++))
+    done <<< "$networks"
+
+    if [[ ${#menu_items[@]} -eq 0 ]]; then
+        whiptail --msgbox "Нет доступных сетей." 10 40
+        return 1
+    fi
+
+    local choice
+    choice=$(whiptail --title "WiFi — Выберите сеть" --menu \
+        "Сканирование $WLAN_IFACE:" 20 60 12 \
+        "${menu_items[@]}" \
+        3>&1 1>&2 2>&3)
+    [[ $? -ne 0 || -z "$choice" ]] && return 1
+
+    local selected_ssid=$(echo "$ssid_list" | grep "^${choice}:" | sed "s/^${choice}: //")
+    [[ -z "$selected_ssid" ]] && { whiptail --msgbox "Ошибка выбора сети." 8 40; return 1; }
+
+    local password
+    password=$(whiptail --passwordbox "Пароль для сети \"$selected_ssid\":" 10 60 3>&1 1>&2 2>&3)
+    [[ $? -ne 0 || -z "$password" ]] && { whiptail --msgbox "Пароль не введён." 8 40; return 1; }
+
+    echo -e "${CYAN}Подключение к $selected_ssid...${NC}"
+    if nmcli dev wifi connect "$selected_ssid" password "$password" ifname "$WLAN_IFACE" 2>/dev/null; then
+        sleep 2
+        local ip
+        ip=$(ip -4 addr show "$WLAN_IFACE" 2>/dev/null | grep -oP '(?<=inet\s)\d+(\.\d+){3}(/\d+)?' | head -1)
+        if [[ -n "$ip" ]]; then
+            whiptail --msgbox "Подключено!\n\nSSID: $selected_ssid\nIP: $ip\nИнтерфейс: $WLAN_IFACE" 10 50
+        else
+            whiptail --msgbox "Подключено к $selected_ssid\n\nIP не получен. Проверьте DHCP." 10 50
+        fi
+    else
+        whiptail --msgbox "Не удалось подключиться к \"$selected_ssid\".\n\nПроверьте пароль и доступность сети." 10 50
+    fi
+}
+
+# ======================= Проводная сеть =======================
+wired_setup() {
+    local iface
+    iface=$(ip -o link show | awk -F': ' '{print $2}' | grep -E '^(e|eth)' | head -1)
+    [[ -z "$iface" ]] && { whiptail --msgbox "Проводной интерфейс не найден." 10 40; return 1; }
+
+    local choice
+    choice=$(whiptail --title "Проводная сеть: $iface" --menu \
+        "Выберите режим:" 12 55 3 \
+        "1" "Статический IP" \
+        "2" "DHCP" \
+        "3" "Назад" 3>&1 1>&2 2>&3)
+    [[ $? -ne 0 || -z "$choice" || "$choice" == "3" ]] && return 1
+
+    if [[ "$choice" == "1" ]]; then
+        local ip_addr gateway dns
+        ip_addr=$(whiptail --inputbox "IP-адрес с маской (например 192.168.1.100/24):" 10 60 "" 3>&1 1>&2 2>&3)
+        [[ -z "$ip_addr" ]] && return 1
+        gateway=$(whiptail --inputbox "Шлюз:" 10 60 "" 3>&1 1>&2 2>&3)
+        [[ -z "$gateway" ]] && return 1
+        dns=$(whiptail --inputbox "DNS (через пробел, напр. 8.8.8.8 8.8.4.4):" 10 60 "8.8.8.8" 3>&1 1>&2 2>&3)
+        [[ -z "$dns" ]] && dns="8.8.8.8"
+
+        sudo ip addr add "$ip_addr" dev "$iface" 2>/dev/null || whiptail --msgbox "IP уже существует или ошибка." 9 50
+        sudo ip link set "$iface" up
+        sudo ip route add default via "$gateway" 2>/dev/null || true
+
+        sudo mkdir -p /etc/systemd/network
+        cat <<EOF | sudo tee /etc/systemd/network/20-wired.network > /dev/null
+[Match]
+Name=$iface
+
+[Network]
+Address=$ip_addr
+Gateway=$gateway
+DNS=$dns
+EOF
+        sudo systemctl restart systemd-networkd 2>/dev/null || true
+        whiptail --msgbox "Настройка сохранена.\n\nIP: $ip_addr\nШлюз: $gateway\nDNS: $dns" 10 50
+    else
+        sudo dhclient "$iface" 2>/dev/null || \
+            sudo dhcpcd "$iface" 2>/dev/null || \
+            sudo systemctl restart systemd-networkd 2>/dev/null || true
+        sleep 2
+        local ip
+        ip=$(ip -4 addr show "$iface" 2>/dev/null | grep -oP '(?<=inet\s)\d+(\.\d+){3}(/\d+)?' | head -1)
+        whiptail --msgbox "DHCP запрошен.\nIP: ${ip:-не получен}" 9 50
+    fi
+}
+
+# ======================= VPN =======================
+vpn_manage() {
+    if [[ ! -f /etc/openvpn/work.ovpn ]]; then
+        whiptail --msgbox "Файл /etc/openvpn/work.ovpn не найден.\n\nVPN-ключи не скопированы в образ." 10 50
+        return 1
+    fi
+
+    local choice
+    choice=$(whiptail --title "VPN" --menu \
+        "Выберите действие:" 12 55 3 \
+        "1" "Подключиться (OpenVPN)" \
+        "2" "Отключить" \
+        "3" "Назад" 3>&1 1>&2 2>&3)
+    [[ $? -ne 0 || -z "$choice" || "$choice" == "3" ]] && return 1
+
+    if [[ "$choice" == "1" ]]; then
+        if pgrep -x openvpn > /dev/null 2>&1; then
+            whiptail --msgbox "OpenVPN уже запущен." 9 40
+            return 1
+        fi
+        whiptail --title "VPN" --msgbox "Запуск OpenVPN...\n\nПодключение к 45.144.235.152:3389\nНажмите Ctrl+C для отключения." 10 50
+        sudo openvpn --config /etc/openvpn/work.ovpn &
+        sleep 2
+        if pgrep -x openvpn > /dev/null 2>&1; then
+            local tun_ip=$(ip -4 addr show tun0 2>/dev/null | grep -oP '(?<=inet\s)\d+(\.\d+){3}(/\d+)?' | head -1)
+            whiptail --msgbox "VPN подключен!\n\nТуннель: tun0\nIP: ${tun_ip:-не определён}\n\nДля отключения: sudo pkill openvpn" 10 50
+        else
+            whiptail --msgbox "OpenVPN не запустился. Проверьте логи:\nsudo journalctl -xe | tail -20" 10 50
+        fi
+    else
+        sudo pkill openvpn 2>/dev/null || true
+        sleep 1
+        whiptail --msgbox "OpenVPN остановлен." 9 40
+    fi
+}
+
+# ======================= Статус сети =======================
+net_status() {
+    local msg=""
+    msg+="=== Проводные интерфейсы ===\n"
+    msg+=$(ip -o -4 addr show | grep -E 'e|eth' | awk -F': ' '{printf "  %s: %s\n", $2, $4}')
+    msg+="\n=== WiFi ===\n"
+    if [[ -n "$WLAN_IFACE" ]]; then
+        msg+="  Интерфейс: $WLAN_IFACE\n"
+        local wlan_ip=$(ip -4 addr show "$WLAN_IFACE" 2>/dev/null | grep -oP '(?<=inet\s)\d+(\.\d+){3}(/\d+)?' | head -1)
+        msg+="  IP: ${wlan_ip:-не назначен}\n"
+        local wifi_info=$(iw dev "$WLAN_IFACE" link 2>/dev/null || echo "Не подключено")
+        msg+="  WiFi: $wifi_info\n"
+    else
+        msg+="  WiFi-интерфейс не найден\n"
+    fi
+    msg+="\n=== Маршруты ===\n"
+    msg+=$(ip route show | head -5)
+    msg+="\n=== DNS ===\n"
+    msg+=$(resolvectl status 2>/dev/null | grep -E "DNS Servers|Current Scopes" || cat /etc/resolv.conf 2>/dev/null || echo "Нет данных")
+    msg+="\n=== VPN ===\n"
+    if pgrep -x openvpn > /dev/null 2>&1; then
+        msg+="  Статус: АКТИВЕН\n"
+        local tun_ip=$(ip -4 addr show tun0 2>/dev/null | grep -oP '(?<=inet\s)\d+(\.\d+){3}(/\d+)?' | head -1)
+        msg+="  tun0 IP: ${tun_ip:-не определён}\n"
+    else
+        msg+="  Статус: Не подключен\n"
+    fi
+
+    whiptail --title "Сетевой статус" --msgbox "$msg" 30 75
+}
+
+# ======================= ПОДМЕНЮ: IPMI =======================
+submenu_ipmi() {
+    while true; do
+        CHOICE=$(whiptail --title "IPMI" --menu \
+            "Выберите действие:" 16 55 5 \
+            "1" "Пользователи (список / смена пароля)" \
+            "2" "Сенсоры (температура, напряжение)" \
+            "3" "Управление питанием" \
+            "4" "Сеть BMC (статический IP / DHCP)" \
+            "5" "Назад" 3>&1 1>&2 2>&3)
+
+        case $CHOICE in
+            1) ipmi_users ;;
+            2) ipmi_sensors ;;
+            3) ipmi_power ;;
+            4) ipmi_network_config ;;
+            5) break ;;
+            *) break ;;
+        esac
+    done
+}
+
+ipmi_users() {
+    local users_list=$(sudo ipmitool user list 1 2>/dev/null)
+    if [[ -z "$users_list" ]]; then
+        whiptail --msgbox "Не удалось получить список пользователей IPMI.\n\nipmitool не установлен или доступ не настроен." 10 50
+        return 1
+    fi
+    whiptail --title "Пользователи IPMI" --msgbox "$users_list" 20 70
+
+    local user_id=$(whiptail --inputbox "Введите ID пользователя для смены пароля (или пустой для выхода):" 10 60 "" 3>&1 1>&2 2>&3)
+    [[ -z "$user_id" ]] && return 1
+
+    local new_pass=$(whiptail --passwordbox "Новый пароль для пользователя ID $user_id:" 10 60 "" 3>&1 1>&2 2>&3)
+    [[ -z "$new_pass" ]] && { whiptail --msgbox "Пароль не введён." 8 40; return 1; }
+    sudo ipmitool user set password "$user_id" "$new_pass"
+    whiptail --msgbox "Пароль для пользователя ID $user_id изменён." 9 40
+}
+
+ipmi_sensors() {
+    local sensors=$(sudo ipmitool sensor 2>/dev/null)
+    if [[ -z "$sensors" ]]; then
+        whiptail --msgbox "Не удалось получить данные сенсоров IPMI." 10 50
+        return 1
+    fi
+    whiptail --title "Сенсоры IPMI" --msgbox "$sensors" 30 80
+}
+
+ipmi_power() {
+    local power_status=$(sudo ipmitool power status 2>/dev/null | grep -i "Chassis Power" || echo "Unknown")
+    local choice=$(whiptail --title "Управление питанием" --menu \
+        "Текущее состояние: $power_status\nВыберите действие:" 15 55 5 \
+        "1" "Включить" \
+        "2" "Выключить (мягко)" \
+        "3" "Перезагрузить" \
+        "4" "Выключить принудительно" \
+        "5" "Назад" 3>&1 1>&2 2>&3)
+
+    case $choice in
+        1) sudo ipmitool power on; whiptail --msgbox "Команда включения отправлена." 9 40 ;;
+        2) sudo ipmitool power soft; whiptail --msgbox "Мягкое выключение." 9 40 ;;
+        3) sudo ipmitool power reset; whiptail --msgbox "Перезагрузка." 9 40 ;;
+        4) sudo ipmitool power off; whiptail --msgbox "Принудительное выключение." 9 40 ;;
+        5) return ;;
+    esac
+}
+
+ipmi_network_config() {
+    local channel=$(whiptail --inputbox "Номер канала IPMI (обычно 1):" 10 60 "1" 3>&1 1>&2 2>&3)
+    [[ -z "$channel" ]] && return 1
+
+    local current_mode=$(sudo ipmitool lan print "$channel" 2>/dev/null | grep "IP Address Source" | awk -F': ' '{print $2}')
+    local current_ip=$(sudo ipmitool lan print "$channel" 2>/dev/null | grep "IP Address" | grep -v "Source" | awk -F': ' '{print $2}')
+
+    local choice=$(whiptail --title "Сеть IPMI (канал $channel)" --menu \
+        "Текущий режим: ${current_mode:-неизвестно}\nТекущий IP: ${current_ip:-неизвестно}\n\nВыберите:" 15 60 3 \
+        "1" "DHCP" \
+        "2" "Статический IP" \
+        "3" "Назад" 3>&1 1>&2 2>&3)
+
+    case $choice in
+        1) sudo ipmitool lan set "$channel" ipsrc dhcp; whiptail --msgbox "IPMI переключён в DHCP." 9 40 ;;
+        2)
+            local ip_addr=$(whiptail --inputbox "IP-адрес BMC:" 10 60 "" 3>&1 1>&2 2>&3)
+            [[ -z "$ip_addr" ]] && return 1
+            local netmask=$(whiptail --inputbox "Маска подсети:" 10 60 "255.255.255.0" 3>&1 1>&2 2>&3)
+            [[ -z "$netmask" ]] && return 1
+            local gateway=$(whiptail --inputbox "Шлюз:" 10 60 "" 3>&1 1>&2 2>&3)
+            [[ -z "$gateway" ]] && return 1
+            sudo ipmitool lan set "$channel" ipsrc static
+            sudo ipmitool lan set "$channel" ipaddr "$ip_addr"
+            sudo ipmitool lan set "$channel" netmask "$netmask"
+            sudo ipmitool lan set "$channel" defgw ipaddr "$gateway"
+            whiptail --msgbox "Статический IP настроен:\nIP: $ip_addr\nМаска: $netmask\nШлюз: $gateway" 10 50
+            ;;
+        3) return ;;
+    esac
+}
+
+# ======================= ПОДМЕНЮ: ДИАГНОСТИКА =======================
+submenu_diag() {
+    while true; do
+        CHOICE=$(whiptail --title "Диагностика" --menu \
+            "Выберите инструмент:" 20 55 10 \
+            "1" "Ping" \
+            "2" "Traceroute" \
+            "3" "DNS-lookup (nslookup/dig)" \
+            "4" "Открытые порты (ss)" \
+            "5" "Пакетный сниффер (tcpdump)" \
+            "6" "Логи (journalctl / dmesg)" \
+            "7" "Системные ресурсы (btop)" \
+            "8" "Назад" 3>&1 1>&2 2>&3)
+
+        case $CHOICE in
+            1) diag_ping ;;
+            2) diag_traceroute ;;
+            3) diag_dns ;;
+            4) diag_ports ;;
+            5) diag_tcpdump ;;
+            6) diag_logs ;;
+            7) diag_resources ;;
+            8) break ;;
+            *) break ;;
+        esac
+    done
+}
+
+diag_ping() {
+    local host=$(whiptail --inputbox "Адрес для пинга:" 10 60 "8.8.8.8" 3>&1 1>&2 2>&3)
+    [[ -z "$host" ]] && return 1
+    local count=$(whiptail --inputbox "Количество пакетов:" 10 60 "4" 3>&1 1>&2 2>&3)
+    [[ -z "$count" ]] && count=4
+    whiptail --title "Ping $host" --infobox "Пинг $host ($count пакетов)..." 8 50
+    local result=$(ping -c "$count" "$host" 2>&1)
+    whiptail --title "Результат пинга" --msgbox "$result" 20 70
+}
+
+diag_traceroute() {
+    local host=$(whiptail --inputbox "Адрес для traceroute:" 10 60 "8.8.8.8" 3>&1 1>&2 2>&3)
+    [[ -z "$host" ]] && return 1
+    whiptail --title "Traceroute $host" --infobox "Traceroute к $host..." 8 50
+    local result=$(traceroute "$host" 2>&1 | head -30)
+    whiptail --title "Результат traceroute" --msgbox "$result" 20 70
+}
+
+diag_dns() {
+    local host=$(whiptail --inputbox "Доменное имя:" 10 60 "example.com" 3>&1 1>&2 2>&3)
+    [[ -z "$host" ]] && return 1
+    local result=""
+    if command -v dig >/dev/null 2>&1; then
+        result=$(dig "$host" +short 2>&1)
+    elif command -v nslookup >/dev/null 2>&1; then
+        result=$(nslookup "$host" 2>&1)
+    else
+        result=$(getent hosts "$host" 2>&1)
+    fi
+    whiptail --title "DNS: $host" --msgbox "$result" 15 60
+}
+
+diag_ports() {
+    local result=$(ss -tlnp 2>/dev/null || netstat -tlnp 2>/dev/null || echo "Нет данных")
+    whiptail --title "Открытые порты" --msgbox "$result" 25 75
+}
+
+diag_tcpdump() {
+    local iface=$(ip -o link show | awk -F': ' '{print $2}' | grep -E '^(e|eth|wlan)' | head -1)
+    whiptail --title "tcpdump" --msgbox "Интерфейс: ${iface:-eth0}\n\nЗапуск tcpdump на 10 секунд..." 9 50
+    local result=$(sudo timeout 10 tcpdump -i "$iface" -c 20 2>&1 || true)
+    whiptail --title "tcpdump" --msgbox "$result" 20 75
+}
+
+diag_logs() {
+    local choice=$(whiptail --title "Логи" --menu \
+        "Выберите тип логов:" 12 55 4 \
+        "1" "journalctl (последние)" \
+        "2" "dmesg" \
+        "3" "journalctl (сервис)" \
+        "4" "Назад" 3>&1 1>&2 2>&3)
+    [[ $? -ne 0 || "$choice" == "4" ]] && return 1
+
+    local result=""
+    case $choice in
+        1) result=$(journalctl -n 50 --no-pager 2>&1) ;;
+        2) result=$(dmesg | tail -30 2>&1) ;;
+        3)
+            local svc=$(whiptail --inputbox "Имя сервиса (напр. sshd, dnsmasq):" 10 60 "" 3>&1 1>&2 2>&3)
+            [[ -z "$svc" ]] && return 1
+            result=$(journalctl -u "$svc" -n 50 --no-pager 2>&1)
+            ;;
+    esac
+    whiptail --title "Логи" --msgbox "$result" 25 75
+}
+
+diag_resources() {
+    whiptail --title "Системные ресурсы" --msgbox "Запуск btop (Ctrl+C для выхода)..." 9 40
+    btop 2>/dev/null || top 2>/dev/null || echo "btop/top недоступны"
+}
+
+# ======================= ПОДМЕНЮ: ДИСКИ =======================
+submenu_disks() {
+    while true; do
+        CHOICE=$(whiptail --title "Диски" --menu \
+            "Выберите действие:" 18 55 8 \
+            "1" "Список дисков (lsblk)" \
+            "2" "Разметка (fdisk/parted)" \
+            "3" "Монтирование" \
+            "4" "Проверка файловой системы (fsck)" \
+            "5" "Информация о дисках (smartctl)" \
+            "6" "Запись образа (dd)" \
+            "7" "Восстановление (ddrescue)" \
+            "8" "Назад" 3>&1 1>&2 2>&3)
+
+        case $CHOICE in
+            1) disk_list ;;
+            2) disk_partition ;;
+            3) disk_mount ;;
+            4) disk_fsck ;;
+            5) disk_smart ;;
+            6) disk_dd ;;
+            7) disk_ddrescue ;;
+            8) break ;;
+            *) break ;;
+        esac
+    done
+}
+
+disk_list() {
+    local result=$(lsblk -o NAME,SIZE,TYPE,FSTYPE,MOUNTPOINT,RO,MODEL 2>/dev/null)
+    whiptail --title "Список дисков" --msgbox "$result" 25 75
+}
+
+disk_partition() {
+    local disk=$(whiptail --inputbox "Устройство (например, sda):" 10 60 "" 3>&1 1>&2 2>&3)
+    [[ -z "$disk" ]] && return 1
+    local choice=$(whiptail --title "Разметка $disk" --menu \
+        "Что сделать?" 12 55 4 \
+        "1" "fdisk" \
+        "2" "parted (GPT)" \
+        "3" "Просмотр таблицы разделов" \
+        "4" "Назад" 3>&1 1>&2 2>&3)
+    [[ $? -ne 0 || "$choice" == "4" ]] && return 1
+
+    case $choice in
+        1) sudo fdisk "/dev/$disk" ;;
+        2) sudo parted "/dev/$disk" print; sudo parted "/dev/$disk" ;;&
+        3) sudo parted -s "/dev/$disk" unit s print 2>&1 ;;
+    esac
+}
+
+disk_mount() {
+    local disk=$(whiptail --inputbox "Устройство (например, sda1):" 10 60 "" 3>&1 1>&2 2>&3)
+    [[ -z "$disk" ]] && return 1
+    local mnt=$(whiptail --inputbox "Точка монтирования (например /mnt/data):" 10 60 "/mnt" 3>&1 1>&2 2>&3)
+    [[ -z "$mnt" ]] && return 1
+    sudo mkdir -p "$mnt"
+    sudo mount "/dev/$disk" "$mnt" 2>&1
+    local result=$(df -h "$mnt" 2>/dev/null)
+    whiptail --title "Монтирование" --msgbox "Результат:\n\n$result" 15 60
+}
+
+disk_fsck() {
+    local disk=$(whiptail --inputbox "Устройство для проверки (например sda1):" 10 60 "" 3>&1 1>&2 2>&3)
+    [[ -z "$disk" ]] && return 1
+    whiptail --title "fsck" --yesno "Запустить fsck на /dev/$disk?\n\nУбедитесь, что раздел НЕ смонтирован!" 10 55
+    [[ $? -ne 0 ]] && return 1
+    sudo umount "/dev/$disk" 2>/dev/null || true
+    sudo fsck -y "/dev/$disk" 2>&1 | tail -20
+}
+
+disk_smart() {
+    local disk=$(whiptail --inputbox "Устройство (например, sda):" 10 60 "" 3>&1 1>&2 2>&3)
+    [[ -z "$disk" ]] && return 1
+    whiptail --title "smartctl" --infobox "Запуск smartctl на /dev/$disk..." 8 50
+    local result=$(sudo smartctl -a "/dev/$disk" 2>&1 | tail -40)
+    whiptail --title "smartctl $disk" --msgbox "$result" 25 75
+}
+
+disk_dd() {
+    local src=$(whiptail --inputbox "Источник (ISO/образ):" 10 60 "" 3>&1 1>&2 2>&3)
+    [[ -z "$src" ]] && return 1
+    if [[ ! -f "$src" ]]; then
+        whiptail --msgbox "Файл не найден: $src" 9 40
+        return 1
+    fi
+    local disk=$(whiptail --inputbox "Целевое устройство (например sda):" 10 60 "" 3>&1 1>&2 2>&3)
+    [[ -z "$disk" ]] && return 1
+    whiptail --title "dd" --yesno "Записать $src на /dev/$disk?\n\nВНИМАНИЕ: все данные будут уничтожены!" 10 55
+    [[ $? -ne 0 ]] && return 1
+    sudo dd if="$src" of="/dev/$disk" bs=4M status=progress conv=fsync 2>&1 | tail -5
+    whiptail --msgbox "Готово!" 8 30
+}
+
+disk_ddrescue() {
+    local src=$(whiptail --inputbox "Источник (исповрежденный диск):" 10 60 "" 3>&1 1>&2 2>&3)
+    [[ -z "$src" ]] && return 1
+    local disk=$(whiptail --inputbox "Целевое устройство:" 10 60 "" 3>&1 1>&2 2>&3)
+    [[ -z "$disk" ]] && return 1
+    whiptail --title "ddrescue" --yesno "Запустить ddrescue: /dev/$src → /dev/$disk?\n\nВНИМАНИЕ: все данные на /dev/$disk будут уничтожены!" 10 55
+    [[ $? -ne 0 ]] && return 1
+    sudo ddrescue -d -f "/dev/$src" "/dev/$disk" 2>&1 | tail -20
+    whiptail --msgbox "Завершено." 8 30
+}
+
+# ======================= ГЛАВНОЕ МЕНЮ =======================
+main() {
+    while true; do
+        CHOICE=$(whiptail --title "RescueOS — Администрирование" --menu \
+            "Выберите раздел:" 20 55 5 \
+            "1" "Сеть (WiFi, проводная, VPN, статус)" \
+            "2" "IPMI (сенсоры, питание, пользователи)" \
+            "3" "Диагностика (ping, порты, логи)" \
+            "4" "Диски (lsblk, mount, dd, fsck)" \
+            "5" "Выход" 3>&1 1>&2 2>&3)
+
+        case $CHOICE in
+            1) submenu_network ;;
+            2) submenu_ipmi ;;
+            3) submenu_diag ;;
+            4) submenu_disks ;;
+            5) exit 0 ;;
+            *) exit 0 ;;
+        esac
+    done
+}
+
+main "$@"

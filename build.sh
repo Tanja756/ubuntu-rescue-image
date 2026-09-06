@@ -50,6 +50,7 @@ EXTRA_SYSTEM_PACKAGES=(
   "tcpdump" "wireshark-common" "iftop" "iperf3" "network-manager" "bash-completion" "aircrack-ng" "hcxdumptool" "hcxtools"
   "ipmitool" "freeipmi" "whiptail"
   "libusb-1.0-0" "libc6"
+   "wpasupplicant" "wireless-tools" "gdisk" "usbutils"
   )
 
 # Список имён deb-файлов, которые нужно установить
@@ -477,6 +478,7 @@ echo '
 alias config="bash $HOME/.config/settings.sh"
 alias vpn-connect="sudo openvpn --config /etc/openvpn/work.ovpn"
 alias vpn-stop="sudo pkill openvpn"
+alias setup="sudo /usr/local/bin/setup"
 alias ll="ls -alF"
 alias la="ls -A"
 alias l="ls -CF"
@@ -627,6 +629,9 @@ sudo openvpn --config /etc/openvpn/work.ovpn
 sudo openvpn --config /etc/openvpn/work.conf
 sudo systemctl status openvpn* 2>/dev/null || true
 sudo ip addr show | grep tun
+# Setup
+setup
+sudo setup
 # Установка Ubuntu
 install-ubuntu ~/ubuntu-24.04.1-desktop-amd64.iso
 sudo dd if=~/ubuntu.iso of=/dev/sdX bs=4M status=progress conv=fsync
@@ -729,6 +734,10 @@ echo "  /etc/openvpn/work.conf (с отдельными файлами)"
 echo "  /etc/openvpn/ca.crt, /etc/openvpn/work.crt, /etc/openvpn/work.key, /etc/openvpn/ta.key"
 echo ""
 echo ""
+echo -e "\\e[1;33mАдминистрирование:\\e[0m"
+echo "  setup — конфигурация сети, IPMI, диски, диагностика"
+echo "  sudo setup — запуск от root"
+echo ""
 WELCOME
 chmod +x /etc/profile.d/welcome.sh
 
@@ -823,6 +832,13 @@ SCRIPT_EOF
       sudo chmod 644 "$CHROOTDIR/etc/openvpn/ca.crt" "$CHROOTDIR/etc/openvpn/work.crt" 2>/dev/null || true
       sudo chown -R root:root "$CHROOTDIR/etc/openvpn" 2>/dev/null || true
       success "VPN keys copied to /etc/openvpn/"
+  # Копирование setup-скрипта
+  if [[ -f "$CUSTOM_FILES_DIR/setup" ]]; then
+      log "Installing admin setup script..."
+      sudo cp "$CUSTOM_FILES_DIR/setup" "$CHROOTDIR/usr/local/bin/setup"
+      sudo chmod +x "$CHROOTDIR/usr/local/bin/setup"
+      success "Setup script installed to /usr/local/bin/setup"
+  fi
   fi
   log "Updating initramfs..."
   sudo chroot "$CHROOTDIR" update-initramfs -u -k all
