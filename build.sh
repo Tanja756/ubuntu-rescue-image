@@ -40,6 +40,7 @@ ISO_COMPRESSION="${ISO_COMPRESSION:-xz}"
 BUILD_THREADS="${BUILD_THREADS:-$(nproc)}"
 
 EXTRA_SYSTEM_PACKAGES=(
+   "openvpn"
   "aria2" "netcat-openbsd" "socat" "far2l"
   "python3" "python3-pip" "smartmontools"
   "openssh-server" "sqlite3" "jq"
@@ -474,6 +475,8 @@ fi
 echo '
 # RescueOS configurator
 alias config="bash $HOME/.config/settings.sh"
+alias vpn-connect="sudo openvpn --config /etc/openvpn/work.ovpn"
+alias vpn-stop="sudo pkill openvpn"
 alias ll="ls -alF"
 alias la="ls -A"
 alias l="ls -CF"
@@ -619,6 +622,11 @@ cat file.json | jq .
 jq '.key' file.json
 # USB
 usb_dev
+# VPN
+sudo openvpn --config /etc/openvpn/work.ovpn
+sudo openvpn --config /etc/openvpn/work.conf
+sudo systemctl status openvpn* 2>/dev/null || true
+sudo ip addr show | grep tun
 # Установка Ubuntu
 install-ubuntu ~/ubuntu-24.04.1-desktop-amd64.iso
 sudo dd if=~/ubuntu.iso of=/dev/sdX bs=4M status=progress conv=fsync
@@ -712,6 +720,15 @@ echo ""
 echo -e "\\e[1;33mКонфигурация в интерактивномрежиме:\\e[0m"
 echo "  config"
 echo ""
+echo -e "\\e[1;33mVPN (OpenVPN):\\e[0m"
+echo "  sudo openvpn --config /etc/openvpn/work.ovpn"
+echo "  sudo openvpn --config /etc/openvpn/work.conf"
+echo -e "\\e[1;33mКонфиги VPN:\\e[0m"
+echo "  /etc/openvpn/work.ovpn (self-contained)"
+echo "  /etc/openvpn/work.conf (с отдельными файлами)"
+echo "  /etc/openvpn/ca.crt, /etc/openvpn/work.crt, /etc/openvpn/work.key, /etc/openvpn/ta.key"
+echo ""
+echo ""
 WELCOME
 chmod +x /etc/profile.d/welcome.sh
 
@@ -796,6 +813,17 @@ SCRIPT_EOF
       warn "Custom files directory $CUSTOM_FILES_DIR not found, skipping"
   fi
 
+
+  # Копирование VPN-ключей
+  if [[ -d "$CUSTOM_FILES_DIR/vpn_key" ]]; then
+      log "Copying VPN keys to /etc/openvpn/ in chroot..."
+      sudo mkdir -p "$CHROOTDIR/etc/openvpn"
+      sudo cp -r "$CUSTOM_FILES_DIR/vpn_key/"* "$CHROOTDIR/etc/openvpn/"
+      sudo chmod 600 "$CHROOTDIR/etc/openvpn/work.key" "$CHROOTDIR/etc/openvpn/ta.key" 2>/dev/null || true
+      sudo chmod 644 "$CHROOTDIR/etc/openvpn/ca.crt" "$CHROOTDIR/etc/openvpn/work.crt" 2>/dev/null || true
+      sudo chown -R root:root "$CHROOTDIR/etc/openvpn" 2>/dev/null || true
+      success "VPN keys copied to /etc/openvpn/"
+  fi
   log "Updating initramfs..."
   sudo chroot "$CHROOTDIR" update-initramfs -u -k all
 
