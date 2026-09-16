@@ -1,3 +1,9 @@
 rescuebuild/
 *.iso
 export/vpn_key/
+# Локальные исходники драйвера WiFi (для сборки без доступа к GitHub)
+rtl8192eu/
+# Кэш скачанных/скопированных исходников драйвера
+.rtl8192eu-src/
+# Крупный бинарный билд bettercap — не для git
+export/bettercap
